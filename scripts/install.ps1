@@ -5,6 +5,7 @@
 )
 
 $ErrorActionPreference = "Stop"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 Write-Host "==> MemeDock Windows 智能安装程序" -ForegroundColor Cyan
 
@@ -14,7 +15,7 @@ function Try-InstallFromRelease {
   try {
     $release = Invoke-RestMethod -Uri $apiUrl -Headers @{ "User-Agent" = "MemeDock-Installer" }
   } catch {
-    Write-Host "    未获取到公开发布的 Release。" -ForegroundColor Yellow
+    Write-Host "    未获取到公开发布的 Release: $($_.Exception.Message)" -ForegroundColor Yellow
     return $false
   }
 
@@ -29,7 +30,7 @@ function Try-InstallFromRelease {
 
   $outPath = Join-Path $env:TEMP $asset.name
   Write-Host "==> 正在下载 $($asset.name) ..."
-  Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $outPath
+  Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $outPath -UseBasicParsing
 
   Write-Host "==> 正在启动安装向导..."
   if ($outPath.EndsWith(".msi")) {

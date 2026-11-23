@@ -58,26 +58,32 @@ echo "==> MemeDock macOS 安装程序 (架构: $ARCH)"
 
 install_from_dmg() {
   local dmg_path="$1"
-  echo "==> 正在挂载镜像: $dmg_path"
   local mount_point
-  mount_point="$(hdiutil attach "$dmg_path" -nobrowse -quiet | awk '/\/Volumes\// { $1=$2=""; print substr($0,3) }' | head -n 1)"
-  if [[ -z "$mount_point" || ! -d "$mount_point" ]]; then
-    mount_point="$(ls -d /Volumes/*MemeDock* 2>/dev/null | head -n 1 || true)"
-  fi
-  if [[ -z "$mount_point" || ! -d "$mount_point" ]]; then
-    echo "挂载 DMG 失败"
-    return 1
-  fi
+  mount_point="$(mktemp -d)"
+
+  cleanup_mount() {
+    if mount | grep -q "on ${mount_point} "; then
+      hdiutil detach "$mount_point" -quiet 2>/dev/null || hdiutil detach "$mount_point" -force -quiet 2>/dev/null || true
+    fi
+    rmdir "$mount_point" 2>/dev/null || true
+  }
+  trap cleanup_mount RETURN
+
+  echo "==> 正在挂载镜像: $dmg_path"
+  hdiutil attach "$dmg_path" -nobrowse -readonly -mountpoint "$mount_point" -quiet
 
   local app_src="$mount_point/${APP_NAME}.app"
   if [[ ! -d "$app_src" ]]; then
-    app_src="$(find "$mount_point" -maxdepth 2 -name "*.app" | head -n 1)"
+    app_src="$(find "$mount_point" -maxdepth 2 -name "*.app" | head -n 1 || true)"
+  fi
+  if [[ -z "$app_src" || ! -d "$app_src" ]]; then
+    echo "镜像中未找到 ${APP_NAME}.app"
+    return 1
   fi
 
   echo "==> 正在安装到 ${INSTALL_DIR}/${APP_NAME}.app ..."
   rm -rf "${INSTALL_DIR}/${APP_NAME}.app"
   cp -R "$app_src" "${INSTALL_DIR}/${APP_NAME}.app"
-  hdiutil detach "$mount_point" -quiet || true
   xattr -dr com.apple.quarantine "${INSTALL_DIR}/${APP_NAME}.app" 2>/dev/null || true
   echo "==> 安装完成: ${INSTALL_DIR}/${APP_NAME}.app"
 }
@@ -87,7 +93,7 @@ try_download_release() {
   local api_url="https://api.github.com/repos/${REPO}/releases/latest"
   local release_json
   if ! release_json="$(curl -fsSL "$api_url" 2>/dev/null)"; then
-    echo "    未获取到公开发布的 Release。"
+    echo "    未获取到公开发布的 Release（请检查网络或代理）。"
     return 1
   fi
 
@@ -102,9 +108,11 @@ try_download_release() {
     return 1
   fi
 
-  local tmp_dmg
-  tmp_dmg="$(mktemp -t memedock-XXXXXX.dmg)"
-  trap 'rm -f "$tmp_dmg"' EXIT
+  local tmp_dir tmp_dmg
+  tmp_dir="$(mktemp -d)"
+  tmp_dmg="${tmp_dir}/${APP_NAME}.dmg"
+  trap 'rm -rf "$tmp_dir"' RETURN
+
   echo "==> 正在下载: $dmg_url"
   curl -fL --progress-bar "$dmg_url" -o "$tmp_dmg"
   install_from_dmg "$tmp_dmg"
@@ -168,6 +176,7 @@ build_from_source() {
     echo "==> 正在安装到 ${INSTALL_DIR}/${APP_NAME}.app ..."
     rm -rf "${INSTALL_DIR}/${APP_NAME}.app"
     cp -R "$app_bundle" "${INSTALL_DIR}/${APP_NAME}.app"
+    xattr -dr com.apple.quarantine "${INSTALL_DIR}/${APP_NAME}.app" 2>/dev/null || true
     echo "==> 本地构建并安装完成！"
   else
     echo "未找到构建产物: $app_bundle"
