@@ -22,7 +22,8 @@ use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, Manager, Position, State, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, LogicalPosition, Manager, Position, State, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
@@ -511,6 +512,11 @@ pub fn run() {
                 qq_dock_enabled: qq_dock_enabled.clone(),
                 suspend_blur_hide: suspend_blur_hide.clone(),
             });
+
+            // Webviews can invoke commands as soon as they load. Register AppState first.
+            for config in &app.config().app.windows {
+                WebviewWindowBuilder::from_config(app.handle(), config)?.build()?;
+            }
 
             if let Some(preview) = app.get_webview_window("preview") {
                 preview.set_ignore_cursor_events(true)?;
