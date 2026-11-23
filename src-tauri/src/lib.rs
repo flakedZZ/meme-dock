@@ -37,33 +37,47 @@ pub struct AppState {
     pub suspend_blur_hide: Arc<AtomicBool>,
 }
 
+#[cfg(target_os = "windows")]
+fn set_passive_window(
+    window: &WebviewWindow,
+    visible: bool,
+    position: Option<(i32, i32)>,
+) -> tauri::Result<()> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+        SWP_SHOWWINDOW,
+    };
+
+    // Tao's show() can activate an already-created window. Use native visibility
+    // for both showing and hiding passive windows, whose Tao visibility stays false.
+    let hwnd = window.hwnd()?;
+    let mut flags = SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER;
+    flags |= if visible {
+        SWP_SHOWWINDOW
+    } else {
+        SWP_HIDEWINDOW
+    };
+    if position.is_none() {
+        flags |= SWP_NOMOVE;
+    }
+    let (x, y) = position.unwrap_or_default();
+    if unsafe { SetWindowPos(hwnd.0 as _, std::ptr::null_mut(), x, y, 0, 0, flags) } == 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
 fn set_preview_visible(preview: &WebviewWindow, visible: bool) -> tauri::Result<()> {
     #[cfg(target_os = "windows")]
     {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-            SWP_SHOWWINDOW,
-        };
-
-        // Tao's show() can activate an already-created window on Windows.
         let window = preview.clone();
         preview.run_on_main_thread(move || {
-            let Ok(hwnd) = window.hwnd() else {
-                return;
-            };
             let main_visible = visible
                 && window
                     .app_handle()
                     .get_webview_window("main")
                     .is_some_and(|main| main.is_visible().unwrap_or(false));
-            let visibility = if main_visible {
-                SWP_SHOWWINDOW
-            } else {
-                SWP_HIDEWINDOW
-            };
-            let flags = SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | visibility;
-            // Both visibility changes bypass Tao so its cached visibility stays consistent.
-            unsafe { SetWindowPos(hwnd.0 as _, std::ptr::null_mut(), 0, 0, 0, 0, flags) };
+            let _ = set_passive_window(&window, main_visible, None);
         })
     }
     #[cfg(not(target_os = "windows"))]

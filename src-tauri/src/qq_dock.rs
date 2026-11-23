@@ -2,7 +2,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use tauri::{AppHandle, LogicalPosition, Manager, Position};
+#[cfg(not(target_os = "windows"))]
+use tauri::LogicalPosition;
+use tauri::{AppHandle, Manager, WebviewWindow};
 
 #[derive(Debug, Clone, Copy)]
 pub struct WindowRect {
@@ -14,68 +16,126 @@ pub struct WindowRect {
 
 /// Start low-frequency QQ foreground window watcher for the optional edge dock trigger button.
 pub fn spawn_qq_dock_watcher(app: AppHandle, enabled_flag: Arc<AtomicBool>) {
+    let Some(dock) = app.get_webview_window("qq-dock") else {
+        return;
+    };
     thread::spawn(move || {
-        let mut last_visible = false;
-        let mut last_pos: Option<(i32, i32)> = None;
+        let mut last_position = None;
 
         loop {
-            if !enabled_flag.load(Ordering::Relaxed) {
-                if last_visible {
-                    if let Some(win) = app.get_webview_window("qq-dock") {
-                        let _ = win.hide();
-                    }
-                    last_visible = false;
-                    last_pos = None;
-                }
-                thread::sleep(Duration::from_millis(900));
-                continue;
+            let enabled = enabled_flag.load(Ordering::Relaxed);
+            let position = if enabled && !main_panel_visible(&app) {
+                detect_foreground_qq_window().and_then(|rect| dock_position(&dock, rect))
+            } else {
+                None
+            };
+
+            if position != last_position && update_dock(&dock, position).is_ok() {
+                last_position = position;
             }
 
-            // Hide dock button while main MemeDock panel is open
-            let main_visible = app
-                .get_webview_window("main")
-                .and_then(|w| w.is_visible().ok())
-                .unwrap_or(false);
-
-            if main_visible {
-                if last_visible {
-                    if let Some(win) = app.get_webview_window("qq-dock") {
-                        let _ = win.hide();
-                    }
-                    last_visible = false;
-                }
-                thread::sleep(Duration::from_millis(450));
-                continue;
-            }
-
-            if let Some(rect) = detect_foreground_qq_window() {
-                let target_x = (rect.x + rect.width - 2.0).round() as i32;
-                let target_y = (rect.y + rect.height * 0.42).round() as i32;
-
-                if let Some(win) = app.get_webview_window("qq-dock") {
-                    if last_pos != Some((target_x, target_y)) {
-                        let _ = win.set_position(Position::Logical(LogicalPosition::new(
-                            target_x as f64,
-                            target_y as f64,
-                        )));
-                        last_pos = Some((target_x, target_y));
-                    }
-                    if !last_visible {
-                        let _ = win.show();
-                        last_visible = true;
-                    }
-                }
-            } else if last_visible {
-                if let Some(win) = app.get_webview_window("qq-dock") {
-                    let _ = win.hide();
-                }
-                last_visible = false;
-                last_pos = None;
-            }
-
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(Duration::from_millis(if enabled { 500 } else { 900 }));
         }
     });
+}
+
+fn main_panel_visible(app: &AppHandle) -> bool {
+    app.get_webview_window("main")
+        .is_some_and(|main| main.is_visible().unwrap_or(false))
+}
+
+fn update_dock(dock: &WebviewWindow, position: Option<(i32, i32)>) -> tauri::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let window = dock.clone();
+        dock.run_on_main_thread(move || {
+            let _ = crate::set_passive_window(&window, position.is_some(), position);
+        })
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some((x, y)) = position {
+            dock.set_position(LogicalPosition::new(x, y))?;
+            dock.show()
+        } else {
+            dock.hide()
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn dock_position(_dock: &WebviewWindow, rect: WindowRect) -> Option<(i32, i32)> {
+    Some((
+        (rect.x + rect.width - 2.0).round() as i32,
+        (rect.y + rect.height * 0.42).round() as i32,
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn dock_position(dock: &WebviewWindow, rect: WindowRect) -> Option<(i32, i32)> {
+    // QQ's screen rectangle is already in physical pixels. Scale only the button size.
+    let monitor = dock
+        .monitor_from_point(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0)
+        .ok()
+        .flatten()
+        .or_else(|| dock.primary_monitor().ok().flatten())?;
+    let work = monitor.work_area();
+    let work_area = WindowRect {
+        x: f64::from(work.position.x),
+        y: f64::from(work.position.y),
+        width: f64::from(work.size.width),
+        height: f64::from(work.size.height),
+    };
+    let size = dock
+        .outer_size()
+        .ok()?
+        .to_logical::<f64>(dock.scale_factor().ok()?);
+    let size = size.to_physical::<u32>(monitor.scale_factor());
+    Some(fit_dock(
+        rect,
+        work_area,
+        f64::from(size.width),
+        f64::from(size.height),
+    ))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn fit_dock(rect: WindowRect, work: WindowRect, width: f64, height: f64) -> (i32, i32) {
+    let right = rect.x + rect.width;
+    let max_x = (work.x + work.width - width).max(work.x);
+    let max_y = (work.y + work.height - height).max(work.y);
+    let x = if right > max_x { right - width } else { right };
+
+    (
+        x.clamp(work.x, max_x).round() as i32,
+        (rect.y + rect.height * 0.42).clamp(work.y, max_y).round() as i32,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fit_dock, WindowRect};
+
+    #[test]
+    fn dock_fits_at_right_edge_of_scaled_secondary_monitor() {
+        let work = WindowRect {
+            x: -1920.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1040.0,
+        };
+        let qq = WindowRect {
+            x: -1000.0,
+            y: 200.0,
+            width: 1000.0,
+            height: 600.0,
+        };
+        assert_eq!(fit_dock(qq, work, 57.0, 102.0), (-57, 452));
+
+        let qq = WindowRect { width: 800.0, ..qq };
+        assert_eq!(fit_dock(qq, work, 57.0, 102.0), (-200, 452));
+    }
 }
 
 fn detect_foreground_qq_window() -> Option<WindowRect> {
