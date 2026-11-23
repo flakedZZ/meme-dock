@@ -62,7 +62,7 @@ pnpm tauri build
 ## GitHub Actions 自动构建（Windows + macOS）
 
 仓库已内置 `.github/workflows/build.yml`：
-- 推送到 `main` 或提交 PR 时自动运行前端构建、Rust 单元测试，并分别在 `windows-latest`（产出 `.exe` / `.msi`）和 `macos-latest`（产出 `arm64` / `x64` `.dmg`）编译安装包并上传 Artifact；
+- 推送到 `main` 或提交 PR 时自动运行前端构建、Rust 单元测试，并分别在 `windows-latest`（产出 `.exe` / `.msi`）和 `macos-latest`（产出 Apple Silicon `arm64` `.dmg`）编译安装包并上传 Artifact；
 - 推送 `v*` 标签（例如 `git tag v0.1.0 && git push origin v0.1.0`）时自动创建 GitHub Release 并附带全平台安装包。
 
 ## 默认快捷键

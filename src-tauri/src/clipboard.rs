@@ -153,12 +153,12 @@ mod windows {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
-    use windows_sys::Win32::Foundation::{HANDLE, HGLOBAL, POINT};
+    use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, POINT};
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
     };
     use windows_sys::Win32::System::Memory::{
-        GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT,
+        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT,
     };
     use windows_sys::Win32::UI::Shell::{DragQueryFileW, DROPFILES, HDROP};
 
