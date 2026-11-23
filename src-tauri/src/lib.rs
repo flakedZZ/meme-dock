@@ -32,9 +32,48 @@ pub struct AppState {
     pub suspend_blur_hide: Arc<AtomicBool>,
 }
 
+fn set_preview_visible(preview: &WebviewWindow, visible: bool) -> tauri::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+            SWP_SHOWWINDOW,
+        };
+
+        // Tao's show() can activate an already-created window on Windows.
+        let window = preview.clone();
+        preview.run_on_main_thread(move || {
+            let Ok(hwnd) = window.hwnd() else {
+                return;
+            };
+            let main_visible = visible
+                && window
+                    .app_handle()
+                    .get_webview_window("main")
+                    .is_some_and(|main| main.is_visible().unwrap_or(false));
+            let visibility = if main_visible {
+                SWP_SHOWWINDOW
+            } else {
+                SWP_HIDEWINDOW
+            };
+            let flags = SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | visibility;
+            // Both visibility changes bypass Tao so its cached visibility stays consistent.
+            unsafe { SetWindowPos(hwnd.0 as _, std::ptr::null_mut(), 0, 0, 0, 0, flags) };
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if visible {
+            preview.show()
+        } else {
+            preview.hide()
+        }
+    }
+}
+
 fn hide_preview_window(app: &AppHandle) {
     if let Some(preview) = app.get_webview_window("preview") {
-        let _ = preview.hide();
+        let _ = set_preview_visible(&preview, false);
     }
 }
 
@@ -319,8 +358,7 @@ fn show_preview(app: AppHandle, state: State<'_, AppState>, id: i64) -> Result<(
         is_animated: item.is_animated,
     };
     let _ = preview.emit("preview-update", payload);
-    let _ = preview.show();
-    Ok(())
+    set_preview_visible(&preview, true).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -474,6 +512,9 @@ pub fn run() {
                 suspend_blur_hide: suspend_blur_hide.clone(),
             });
 
+            if let Some(preview) = app.get_webview_window("preview") {
+                preview.set_ignore_cursor_events(true)?;
+            }
             setup_tray(app)?;
             let _ = register_shortcuts(app.handle(), &settings);
             qq_dock::spawn_qq_dock_watcher(app.handle().clone(), qq_dock_enabled);
