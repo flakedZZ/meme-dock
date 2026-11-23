@@ -201,7 +201,7 @@ mod macos {
 }
 
 #[cfg(target_os = "windows")]
-mod windows {
+pub(crate) mod windows {
     use super::WindowRect;
     use windows_sys::Win32::Foundation::{CloseHandle, RECT};
     use windows_sys::Win32::System::Threading::{
@@ -211,31 +211,31 @@ mod windows {
         GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
     };
 
+    pub(crate) fn is_qq_process(pid: u32) -> bool {
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return false;
+            }
+            let mut path = [0u16; 512];
+            let mut len = path.len() as u32;
+            let ok = QueryFullProcessImageNameW(process, 0, path.as_mut_ptr(), &mut len);
+            CloseHandle(process);
+            ok != 0
+                && String::from_utf16_lossy(&path[..len as usize])
+                    .to_ascii_lowercase()
+                    .ends_with("\\qq.exe")
+        }
+    }
+
     pub fn foreground_qq_rect() -> Option<WindowRect> {
         unsafe {
             let hwnd = GetForegroundWindow();
-            if hwnd.is_null() {
-                return None;
-            }
-            let mut pid: u32 = 0;
-            GetWindowThreadProcessId(hwnd, &mut pid);
-            if pid == 0 {
-                return None;
-            }
-
-            let proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if proc.is_null() {
-                return None;
-            }
-            let mut buf = [0u16; 512];
-            let mut len = buf.len() as u32;
-            let ok = QueryFullProcessImageNameW(proc, 0, buf.as_mut_ptr(), &mut len);
-            CloseHandle(proc);
-            if ok == 0 {
-                return None;
-            }
-            let path = String::from_utf16_lossy(&buf[..len as usize]).to_lowercase();
-            if !path.ends_with("\\qq.exe") {
+            let mut pid = 0;
+            if hwnd.is_null()
+                || GetWindowThreadProcessId(hwnd, &mut pid) == 0
+                || !is_qq_process(pid)
+            {
                 return None;
             }
 

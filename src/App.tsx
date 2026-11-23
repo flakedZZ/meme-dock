@@ -200,9 +200,7 @@ export function App() {
       clearHoverPreview();
       try {
         const res = await api.pasteMeme(meme.id, keepOpen || pinned);
-        if (res.needsAccessibility) {
-          flashToast(res.message);
-        } else if (keepOpen || pinned) {
+        if (!res.pasted || keepOpen || pinned) {
           flashToast(res.message);
         }
         refreshMemes();

@@ -31,7 +31,11 @@ pub fn open_accessibility_settings() -> Result<(), String> {
 }
 
 /// Simulate Ctrl+V (Windows) or Cmd+V (macOS), and optionally Enter if `auto_send` is enabled.
-pub fn simulate_paste(auto_send: bool, delay_ms: u64) -> Result<(), String> {
+pub(crate) fn simulate_paste(
+    auto_send: bool,
+    delay_ms: u64,
+    #[cfg(target_os = "windows")] target: WindowsPasteTarget,
+) -> Result<(), String> {
     if delay_ms > 0 {
         thread::sleep(Duration::from_millis(delay_ms));
     }
@@ -43,7 +47,7 @@ pub fn simulate_paste(auto_send: bool, delay_ms: u64) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        windows::send_ctrl_v(auto_send)
+        windows::send_ctrl_v(target, auto_send)
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -95,13 +99,96 @@ mod macos {
 }
 
 #[cfg(target_os = "windows")]
+pub(crate) use windows::WindowsPasteTarget;
+
+#[cfg(target_os = "windows")]
 mod windows {
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL,
-        VK_RETURN,
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+        VK_CONTROL, VK_MENU, VK_RETURN, VK_SHIFT,
     };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow,
+    };
+
+    #[derive(Clone, Copy)]
+    pub(crate) struct WindowsPasteTarget {
+        hwnd: usize,
+        pid: u32,
+    }
+
+    impl WindowsPasteTarget {
+        pub(crate) fn capture() -> Option<Self> {
+            let hwnd = unsafe { GetForegroundWindow() };
+            let mut pid = 0;
+            if hwnd.is_null()
+                || unsafe { GetWindowThreadProcessId(hwnd, &mut pid) } == 0
+                || !crate::qq_dock::windows::is_qq_process(pid)
+            {
+                return None;
+            }
+            Some(Self {
+                hwnd: hwnd as usize,
+                pid,
+            })
+        }
+
+        pub(crate) fn restore(self, panel: HWND) -> Result<(), String> {
+            let hwnd = self.hwnd as HWND;
+            let mut pid = 0;
+            let foreground = unsafe { GetForegroundWindow() };
+            if unsafe { GetWindowThreadProcessId(hwnd, &mut pid) } == 0 || pid != self.pid {
+                return Err("原来的 QQ 窗口已关闭".to_string());
+            }
+            if foreground != hwnd
+                && (foreground != panel || unsafe { SetForegroundWindow(hwnd) } == 0)
+            {
+                return Err("无法切回原来的 QQ 窗口".to_string());
+            }
+            Ok(())
+        }
+
+        pub(crate) fn wait_for_foreground(self) -> Result<(), String> {
+            let deadline = Instant::now() + Duration::from_millis(250);
+            loop {
+                match self.verify_foreground() {
+                    Ok(()) => return Ok(()),
+                    Err(err) if Instant::now() >= deadline => return Err(err),
+                    Err(_) => thread::sleep(Duration::from_millis(10)),
+                }
+            }
+        }
+
+        pub(crate) fn verify_foreground(self) -> Result<(), String> {
+            let hwnd = self.hwnd as HWND;
+            let mut pid = 0;
+            if unsafe { GetForegroundWindow() } == hwnd
+                && unsafe { GetWindowThreadProcessId(hwnd, &mut pid) } != 0
+                && pid == self.pid
+            {
+                Ok(())
+            } else {
+                Err("原来的 QQ 窗口已失去焦点".to_string())
+            }
+        }
+    }
+
+    fn wait_for_modifiers() -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_millis(750);
+        while [VK_SHIFT, VK_MENU, VK_CONTROL]
+            .iter()
+            .any(|&key| unsafe { GetAsyncKeyState(i32::from(key)) } < 0)
+        {
+            if Instant::now() >= deadline {
+                return Err("请松开 Shift、Alt 或 Ctrl 后重试".to_string());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
+    }
 
     const VK_V: u16 = 0x56;
 
@@ -120,35 +207,52 @@ mod windows {
         }
     }
 
-    pub fn send_ctrl_v(auto_send: bool) -> Result<(), String> {
-        let inputs = [
-            key_input(VK_CONTROL, false),
-            key_input(VK_V, false),
-            key_input(VK_V, true),
-            key_input(VK_CONTROL, true),
-        ];
-
-        unsafe {
-            let sent = SendInput(
+    fn send_keys(inputs: &[INPUT], shortcut: &str) -> Result<(), String> {
+        let sent = unsafe {
+            SendInput(
                 inputs.len() as u32,
                 inputs.as_ptr(),
                 std::mem::size_of::<INPUT>() as i32,
-            );
-            if sent == 0 {
-                return Err("Windows SendInput Ctrl+V 失败".to_string());
+            )
+        };
+        if sent != inputs.len() as u32 {
+            // Release any synthetically pressed key if Windows accepted only part of the sequence.
+            let releases = &inputs[inputs.len() / 2..];
+            if sent > 0 {
+                unsafe {
+                    SendInput(
+                        releases.len() as u32,
+                        releases.as_ptr(),
+                        std::mem::size_of::<INPUT>() as i32,
+                    );
+                }
             }
+            return Err(format!("Windows 未完整发送 {shortcut}"));
         }
+        Ok(())
+    }
+
+    pub(super) fn send_ctrl_v(target: WindowsPasteTarget, auto_send: bool) -> Result<(), String> {
+        wait_for_modifiers()?;
+        target.verify_foreground()?;
+        send_keys(
+            &[
+                key_input(VK_CONTROL, false),
+                key_input(VK_V, false),
+                key_input(VK_V, true),
+                key_input(VK_CONTROL, true),
+            ],
+            "Ctrl+V",
+        )?;
 
         if auto_send {
             thread::sleep(Duration::from_millis(90));
-            let ret_inputs = [key_input(VK_RETURN, false), key_input(VK_RETURN, true)];
-            unsafe {
-                SendInput(
-                    ret_inputs.len() as u32,
-                    ret_inputs.as_ptr(),
-                    std::mem::size_of::<INPUT>() as i32,
-                );
-            }
+            wait_for_modifiers()?;
+            target.verify_foreground()?;
+            send_keys(
+                &[key_input(VK_RETURN, false), key_input(VK_RETURN, true)],
+                "Enter",
+            )?;
         }
         Ok(())
     }

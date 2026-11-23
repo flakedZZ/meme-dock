@@ -10,7 +10,13 @@ pub enum ClipboardImageInput {
 /// Write an image file path to the OS clipboard as a file reference
 /// (macOS: NSURL + NSFilenamesPboardType; Windows: CF_HDROP)
 /// so QQ NT receives the file directly and preserves GIF/WebP animation.
-pub fn copy_file_to_clipboard(path: &Path) -> Result<(), String> {
+pub fn copy_file_to_clipboard(
+    path: &Path,
+    #[cfg(target_os = "windows")] owner: windows_sys::Win32::Foundation::HWND,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let abs = std::path::absolute(path).map_err(|err| err.to_string())?;
+    #[cfg(not(target_os = "windows"))]
     let abs = path
         .canonicalize()
         .unwrap_or_else(|_| path.to_path_buf());
@@ -25,7 +31,7 @@ pub fn copy_file_to_clipboard(path: &Path) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        windows::copy_file_to_clipboard_hdrop(&abs)
+        windows::copy_file_to_clipboard_hdrop(&abs, owner)
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -153,7 +159,7 @@ mod windows {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use std::path::{Path, PathBuf};
-    use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, POINT};
+    use windows_sys::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND, POINT};
     use windows_sys::Win32::System::DataExchange::{
         CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
     };
@@ -164,7 +170,7 @@ mod windows {
 
     const CF_HDROP: u32 = 15;
 
-    pub fn copy_file_to_clipboard_hdrop(path: &Path) -> Result<(), String> {
+    pub fn copy_file_to_clipboard_hdrop(path: &Path, owner: HWND) -> Result<(), String> {
         let wide: Vec<u16> = OsStr::new(path)
             .encode_wide()
             .chain(std::iter::once(0))
@@ -175,7 +181,8 @@ mod windows {
         let total_bytes = dropfiles_size + wide.len() * std::mem::size_of::<u16>();
 
         unsafe {
-            if OpenClipboard(std::ptr::null_mut()) == 0 {
+            // EmptyClipboard needs an owner before SetClipboardData can succeed.
+            if OpenClipboard(owner) == 0 {
                 return Err("打开 Windows 剪贴板失败".to_string());
             }
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "MemeDock",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "identifier": "com.flakedzz.memedock",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -59,6 +59,7 @@
         "skipTaskbar": true,
         "visible": false,
         "focus": false,
+        "focusable": false,
         "shadow": false
       }
     ],

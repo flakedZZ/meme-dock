@@ -12,9 +12,7 @@ use crate::models::{
     AppSettings, ImportResult, MemeItem, MemePage, PasteResult, PlatformStatus, PreviewPayload,
     QqDirInfo, ScanCandidate, TagInfo,
 };
-use crate::paste::{
-    check_accessibility_permission, open_accessibility_settings, simulate_paste,
-};
+use crate::paste::{check_accessibility_permission, open_accessibility_settings, simulate_paste};
 use crate::storage::{ImportOutcome, MemeStore};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,7 +25,13 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
+#[cfg(target_os = "windows")]
+use crate::paste::WindowsPasteTarget;
+
 pub struct AppState {
+    #[cfg(target_os = "windows")]
+    paste_target: std::sync::Mutex<Option<WindowsPasteTarget>>,
+    paste_in_progress: AtomicBool,
     pub store: MemeStore,
     pub qq_dock_enabled: Arc<AtomicBool>,
     pub suspend_blur_hide: Arc<AtomicBool>,
@@ -78,6 +82,21 @@ fn hide_preview_window(app: &AppHandle) {
     }
 }
 
+fn show_main_window(app: &AppHandle, main: &WebviewWindow) {
+    #[cfg(target_os = "windows")]
+    {
+        let state = app.state::<AppState>();
+        *state.paste_target.lock().unwrap() = WindowsPasteTarget::capture();
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = app;
+
+    let _ = main.show();
+    let _ = main.unminimize();
+    let _ = main.set_focus();
+    let _ = main.emit("focus-search", ());
+}
+
 fn toggle_main_window(app: &AppHandle) {
     let Some(main) = app.get_webview_window("main") else {
         return;
@@ -87,10 +106,7 @@ fn toggle_main_window(app: &AppHandle) {
         hide_preview_window(app);
         let _ = main.hide();
     } else {
-        let _ = main.show();
-        let _ = main.unminimize();
-        let _ = main.set_focus();
-        let _ = main.emit("focus-search", ());
+        show_main_window(app, &main);
     }
 }
 
@@ -243,19 +259,42 @@ fn scan_qq_dir(
 }
 
 #[tauri::command]
-fn paste_meme(
-    app: AppHandle,
-    state: State<'_, AppState>,
+async fn paste_meme(app: AppHandle, id: i64, keep_open: bool) -> Result<PasteResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        if state.paste_in_progress.swap(true, Ordering::AcqRel) {
+            return Err("上一张表情仍在粘贴".to_string());
+        }
+        let result = paste_meme_impl(&app, &state, id, keep_open);
+        state.paste_in_progress.store(false, Ordering::Release);
+        result
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+fn paste_meme_impl(
+    app: &AppHandle,
+    state: &AppState,
     id: i64,
     keep_open: bool,
 ) -> Result<PasteResult, String> {
     let orig_path = state.store.resolve_original_path(id)?;
     let _ = state.store.db.record_use(id);
 
+    #[cfg(target_os = "windows")]
+    let owner = app
+        .get_webview_window("main")
+        .ok_or("找不到 MemeDock 面板")?
+        .hwnd()
+        .map_err(|err| err.to_string())?;
+    #[cfg(target_os = "windows")]
+    copy_file_to_clipboard(&orig_path, owner.0 as _)?;
+    #[cfg(not(target_os = "windows"))]
     copy_file_to_clipboard(&orig_path)?;
 
     let settings = state.store.db.get_settings().unwrap_or_default();
-    hide_preview_window(&app);
+    hide_preview_window(app);
 
     let has_access = check_accessibility_permission();
     if !has_access {
@@ -273,12 +312,32 @@ fn paste_meme(
         });
     }
 
+    #[cfg(target_os = "windows")]
+    let target = {
+        let target = *state.paste_target.lock().unwrap();
+        let restored = target
+            .ok_or_else(|| "请先点击 QQ 输入框，再用 Alt+E 打开面板".to_string())
+            .and_then(|target| {
+                restore_qq_for_paste(app, target)?;
+                Ok(target)
+            });
+        match restored {
+            Ok(target) => target,
+            Err(err) => return Ok(paste_fallback(err)),
+        }
+    };
+
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.hide();
     }
 
+    #[cfg(target_os = "windows")]
+    let paste_res = simulate_paste(settings.auto_send, settings.paste_delay_ms, target);
+    #[cfg(not(target_os = "windows"))]
     let paste_res = simulate_paste(settings.auto_send, settings.paste_delay_ms);
 
+    #[cfg(target_os = "windows")]
+    let keep_open = keep_open && target.verify_foreground().is_ok();
     if keep_open {
         if let Some(main) = app.get_webview_window("main") {
             let _ = main.show();
@@ -297,13 +356,36 @@ fn paste_meme(
                 "已粘贴到输入框".to_string()
             },
         }),
-        Err(e) => Ok(PasteResult {
-            copied: true,
-            pasted: false,
-            needs_accessibility: false,
-            message: format!("已复制到剪贴板（自动粘贴未触发: {e}）"),
-        }),
+        Err(e) => Ok(paste_fallback(e)),
     }
+}
+
+fn paste_fallback(error: String) -> PasteResult {
+    PasteResult {
+        copied: true,
+        pasted: false,
+        needs_accessibility: false,
+        message: format!("已复制到剪贴板：{error}"),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn restore_qq_for_paste(app: &AppHandle, target: WindowsPasteTarget) -> Result<(), String> {
+    let main = app
+        .get_webview_window("main")
+        .ok_or("找不到 MemeDock 面板")?;
+    let (send, receive) = std::sync::mpsc::sync_channel(1);
+    let panel = main.clone();
+    main.run_on_main_thread(move || {
+        let result = panel
+            .hwnd()
+            .map_err(|err| err.to_string())
+            .and_then(|hwnd| target.restore(hwnd.0 as _));
+        let _ = send.send(result);
+    })
+    .map_err(|err| err.to_string())?;
+    receive.recv().map_err(|err| err.to_string())??;
+    target.wait_for_foreground()
 }
 
 #[tauri::command]
@@ -409,10 +491,7 @@ fn set_suspend_blur_hide(state: State<'_, AppState>, suspend: bool) {
 #[tauri::command]
 fn open_main_from_dock(app: AppHandle) {
     if let Some(main) = app.get_webview_window("main") {
-        let _ = main.show();
-        let _ = main.unminimize();
-        let _ = main.set_focus();
-        let _ = main.emit("focus-search", ());
+        show_main_window(&app, &main);
     }
 }
 
@@ -508,6 +587,9 @@ pub fn run() {
             let suspend_blur_hide = Arc::new(AtomicBool::new(false));
 
             app.manage(AppState {
+                #[cfg(target_os = "windows")]
+                paste_target: std::sync::Mutex::new(None),
+                paste_in_progress: AtomicBool::new(false),
                 store,
                 qq_dock_enabled: qq_dock_enabled.clone(),
                 suspend_blur_hide: suspend_blur_hide.clone(),
