@@ -43,6 +43,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 
 脚本会自动尝试拉取最新 GitHub Release 的 `.exe` (NSIS) / `.msi` 安装包并启动安装；若无 Release 则自动检查环境并本地编译安装。
 
+### 自动更新
+
+从 v0.1.7 起，MemeDock 每次启动都会在后台检查 GitHub Releases。有更高版本时会显示当前版本和新版本，选择「下载并安装」才会下载并验证签名。选择「稍后」可继续使用，下次启动会重新检查。
+
+旧版需要从 Releases 手动安装一次 v0.1.7 或更新版本。Windows 安装向导出现时，沿用原安装范围和目录。
+
 ## 本地开发与构建
 
 前置环境：Node.js 20+、`pnpm`、Rust 稳定版工具链。
@@ -65,7 +71,7 @@ pnpm tauri build
 
 仓库已内置 `.github/workflows/build.yml`：
 - 推送到 `main` 或提交 PR 时自动运行前端构建、Rust 单元测试，并分别在 `windows-latest`（产出 `.exe` / `.msi`）和 `macos-latest`（产出 Apple Silicon `arm64` `.dmg`）编译安装包并上传 Artifact；
-- 推送 `v*` 标签（例如 `git tag v0.1.0 && git push origin v0.1.0`）时自动创建 GitHub Release 并附带全平台安装包。
+- 推送与应用版本一致的 `v*` 标签时，两个平台都成功后会同时发布安装包、更新签名和 `latest.json`。发布工作流从仓库的 `TAURI_SIGNING_PRIVATE_KEY` secret 读取签名私钥。后续版本须沿用同一把签名密钥。
 
 ## 默认快捷键
 

@@ -6,6 +6,7 @@ pub mod paste;
 pub mod qq_dock;
 pub mod qq_scanner;
 pub mod storage;
+mod updates;
 
 use crate::clipboard::{copy_file_to_clipboard, read_clipboard_images, ClipboardImageInput};
 use crate::models::{
@@ -32,6 +33,7 @@ pub struct AppState {
     #[cfg(target_os = "windows")]
     paste_target: std::sync::Mutex<Option<WindowsPasteTarget>>,
     paste_in_progress: AtomicBool,
+    update_prompt_open: AtomicBool,
     pub store: MemeStore,
     pub qq_dock_enabled: Arc<AtomicBool>,
     pub suspend_blur_hide: Arc<AtomicBool>,
@@ -568,7 +570,11 @@ fn attach_main_window_events(main: WebviewWindow, suspend_blur_hide: Arc<AtomicB
             }
         }
         WindowEvent::Focused(false) => {
-            if !suspend_blur_hide.load(Ordering::Relaxed) {
+            let update_prompt_open = app_handle
+                .state::<AppState>()
+                .update_prompt_open
+                .load(Ordering::Relaxed);
+            if !update_prompt_open && !suspend_blur_hide.load(Ordering::Relaxed) {
                 hide_preview_window(&app_handle);
                 if let Some(w) = app_handle.get_webview_window("main") {
                     let _ = w.hide();
@@ -584,6 +590,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -604,6 +611,7 @@ pub fn run() {
                 #[cfg(target_os = "windows")]
                 paste_target: std::sync::Mutex::new(None),
                 paste_in_progress: AtomicBool::new(false),
+                update_prompt_open: AtomicBool::new(false),
                 store,
                 qq_dock_enabled: qq_dock_enabled.clone(),
                 suspend_blur_hide: suspend_blur_hide.clone(),
@@ -624,6 +632,7 @@ pub fn run() {
             if let Some(main) = app.get_webview_window("main") {
                 attach_main_window_events(main, suspend_blur_hide);
             }
+            updates::check_on_startup(app.handle().clone());
 
             Ok(())
         })

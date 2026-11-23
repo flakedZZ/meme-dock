@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "MemeDock",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "identifier": "com.flakedzz.memedock",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -69,6 +69,14 @@
         "enable": true,
         "scope": ["**"]
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY4RTEyMjhBODBFQzBBM0MKUldROEN1eUFpaUxoK0J4K2ZJM0ovWEs4WGxUZ2hsdFRCN2J0cTkzQnNvVWpnZ1pZSWh6b0hDUlIK",
+      "endpoints": ["https://github.com/flakedZZ/meme-dock/releases/latest/download/latest.json"],
+      "requireSignedVersion": true,
+      "windows": { "installMode": "basicUi" }
     }
   },
   "bundle": {

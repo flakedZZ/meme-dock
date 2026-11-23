@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   check-and-test:
@@ -92,7 +92,14 @@ jobs:
         run: pnpm install
 
       - name: Build Tauri bundles
+        if: github.ref_type != 'tag'
         run: pnpm tauri build --target ${{ matrix.target }}
+
+      - name: Build and sign release bundles
+        if: github.ref_type == 'tag'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: pnpm tauri build --target ${{ matrix.target }} --config src-tauri/tauri.release.conf.json
 
       - name: Verify NSIS installation in Program Files
         if: runner.os == 'Windows'
@@ -114,6 +121,8 @@ jobs:
           path: |
             src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
             src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe.sig
+            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi.sig
 
       - name: Upload macOS bundles
         if: runner.os == 'macOS'
@@ -122,14 +131,38 @@ jobs:
           name: memedock-${{ matrix.platform }}
           path: |
             src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
 
-      - name: Attach assets to GitHub Release on tag push
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+  publish-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-bundles
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
         with:
-          draft: false
-          generate_release_notes: true
-          files: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
-            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
-            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          pattern: memedock-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Create update manifest
+        run: python3 scripts/build-update-manifest.py release-assets "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
+
+      - name: Publish installers and update manifest together
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -d '' assets < <(find release-assets -type f -print0)
+          if gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft > release-draft-status; then
+            if [[ "$(cat release-draft-status)" == false ]]; then
+              exit 0
+            fi
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --generate-notes "${assets[@]}"
+          fi
+          gh release edit "$GITHUB_REF_NAME" --draft=false
