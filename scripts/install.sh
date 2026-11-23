@@ -161,7 +161,7 @@ build_from_source() {
   echo "==> 正在安装前端依赖..."
   pnpm install
   echo "==> 正在构建 MemeDock macOS 应用包..."
-  pnpm tauri build
+  CI=true pnpm tauri build --bundles app
 
   local app_bundle="$project_dir/src-tauri/target/release/bundle/macos/${APP_NAME}.app"
   if [[ -d "$app_bundle" ]]; then
