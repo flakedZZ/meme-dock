@@ -33,7 +33,9 @@ chmod +x scripts/install.sh
 
 > **macOS 权限提示**：首次使用点击自动粘贴功能时，请在「系统设置 -> 隐私与安全性 -> 辅助功能」中勾选 `MemeDock`（设置面板内置了一键跳转按钮）。
 
-### Windows（PowerShell 智能安装脚本）
+### Windows
+
+从 [GitHub Releases](https://github.com/flakedZZ/meme-dock/releases) 下载 `*-setup.exe`。安装到 `Program Files` 等受保护目录时，选择「为所有用户安装」并允许管理员授权。仅为自己安装时，使用向导提供的用户目录。
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1

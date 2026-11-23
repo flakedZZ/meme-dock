@@ -94,6 +94,18 @@ jobs:
       - name: Build Tauri bundles
         run: pnpm tauri build --target ${{ matrix.target }}
 
+      - name: Verify NSIS installation in Program Files
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bundle = "src-tauri/target/${{ matrix.target }}/release/bundle/nsis"
+          $installer = Get-ChildItem $bundle -Filter '*-setup.exe' | Select-Object -First 1
+          $installDir = Join-Path $env:ProgramFiles 'MemeDock'
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList '/S', '/AllUsers' -Wait -PassThru
+          if ($process.ExitCode -ne 0 -or !(Test-Path (Join-Path $installDir 'meme-dock.exe') -PathType Leaf)) {
+            throw "NSIS did not install MemeDock in Program Files (exit code $($process.ExitCode))."
+          }
+
       - name: Upload Windows installers
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
